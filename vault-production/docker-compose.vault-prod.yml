@@ -1,0 +1,36 @@
+services:
+  vault-unseal-key-init:
+    image: node:20
+    container_name: skeleton-mcp-vault-unseal-key-init
+    restart: "no"
+    working_dir: /app
+    command: sh -c "npm run vault:unseal-key -- --json"
+    environment:
+      APP_NAME: ${APP_NAME:-skeleton}
+      VAULT_UNSEAL_KEY: ${VAULT_UNSEAL_KEY:-}
+    volumes:
+      - ./:/app
+
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: skeleton-mcp-vault
+    restart: unless-stopped
+    depends_on:
+      vault-unseal-key-init:
+        condition: service_completed_successfully
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_UNSEAL_KEY: ${VAULT_UNSEAL_KEY:-}
+    ports:
+      - "8200:8200"
+      - "8201:8201"
+    volumes:
+      - ./vault-production/config/vault.hcl:/vault/config/vault.hcl:ro
+      - vault_raft_data:/vault/data
+      - vault_file_data:/vault/file
+    command: vault server -config=/vault/config/vault.hcl
+
+volumes:
+  vault_raft_data:
+  vault_file_data:

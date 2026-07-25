@@ -1,0 +1,47 @@
+services:
+  mcp-http:
+    image: node:20
+    container_name: skeleton-mcp-http
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      APP_NAME: ${APP_NAME:-skeleton}
+      POSTGRES_HOST: ${POSTGRES_HOST:?set POSTGRES_HOST for external Postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:?set POSTGRES_PORT for external Postgres}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB for external Postgres}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER for external Postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD for external Postgres}
+      VAULT_ADDR: ${VAULT_ADDR:?set VAULT_ADDR for external Vault}
+      VAULT_TOKEN: ${VAULT_TOKEN:?set VAULT_TOKEN for external Vault}
+      VAULT_AGENT_ENABLED: "true"
+      VAULT_AGENT_AUTH_MODE: both
+      VAULT_AGENT_TOKEN_FILE_PATH: /tmp/vault-agent-token
+      VAULT_AGENT_LISTENER_ENABLED: "true"
+      VAULT_AGENT_LISTENER_ADDR: http://127.0.0.1:8100
+      VAULT_KV_MOUNT: secret
+      MCP_SERVER_NAME: skeleton-mcp
+      MCP_SERVER_VERSION: 0.1.0
+      MCP_ALLOW_SENSITIVE_OUTPUT: "false"
+      MCP_CONFIG_DEFAULT_USER_ID: default
+      MCP_TOKEN_ROTATION_DEFAULT_INTERVAL_MS: 86400000
+      MCP_TOKEN_ROTATION_USER_INTERVAL_CONFIG_KEY: token.rotation.intervalMs
+      MCP_VAULT_AGENT_AUTH_MODE_CONFIG_KEY: vault.agent.auth.mode
+      MCP_VAULT_AGENT_TOKEN_FILE_PATH_CONFIG_KEY: vault.agent.tokenFilePath
+      MCP_VAULT_AGENT_LISTENER_ADDR_CONFIG_KEY: vault.agent.listener.addr
+      MCP_TRANSPORT_MODE: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: 3000
+      MCP_HTTP_PATH: /mcp
+      MCP_HTTP_HEALTH_PATH: /healthz
+      MCP_HTTP_AUTH_MODE: token
+      MCP_HTTP_TOKEN_SOURCE: vault
+      MCP_HTTP_AUTH_TOKENS: replace-me-token
+      MCP_HTTP_TRUST_PROXY: "false"
+      MCP_HTTP_MAX_BODY_BYTES: 1048576
+      MCP_HTTP_RATE_LIMIT_WINDOW_MS: 60000
+      MCP_HTTP_RATE_LIMIT_MAX_REQUESTS: 60
+    command: sh -c "npm ci && npm run start:http"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
