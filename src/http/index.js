@@ -2,6 +2,7 @@ import { env } from "../config/env.js";
 import { createHttpMcpServer } from "./server.js";
 import { createMcpServer } from "../mcp/server.js";
 import { ConfigStore } from "../services/configStore.js";
+import { RedshiftService } from "../services/redshift.js";
 import { TargetServiceClient } from "../services/targetService.js";
 import { VaultService } from "../services/vault.js";
 
@@ -13,6 +14,7 @@ async function main() {
   }
 
   const targetServiceClient = new TargetServiceClient(env.openshift);
+  const redshiftService = new RedshiftService();
   const configStore = new ConfigStore(env.postgres, {
     appName: env.appName,
     defaultUserId: env.config.defaultUserId
@@ -55,6 +57,7 @@ async function main() {
         tokenIndexPath: env.openshift.tokenIndexPath,
         tokenMetadataConfigKeyPrefix: env.openshift.tokenMetadataConfigKeyPrefix,
         serviceClient: targetServiceClient,
+        redshiftService,
         configStore,
         vaultService
       })

@@ -113,6 +113,16 @@ function createConfigStoreMock() {
         updated_at: item.updatedAt
       };
     },
+    async listConfigs(prefix, userId) {
+      return Array.from(configs.entries())
+        .filter(([mapKey]) => mapKey.startsWith(`${userId}:${prefix}`))
+        .map(([mapKey, item]) => ({
+          user_id: userId,
+          key: mapKey.slice(userId.length + 1),
+          value: item.value,
+          updated_at: item.updatedAt
+        }));
+    },
     async setConfig(key, value, userId) {
       const updatedAt = new Date().toISOString();
       configs.set(`${userId}:${key}`, { value, updatedAt });
@@ -122,6 +132,9 @@ function createConfigStoreMock() {
         value,
         updated_at: updatedAt
       };
+    },
+    async deleteConfig(key, userId) {
+      return configs.delete(`${userId}:${key}`);
     }
   };
 }
@@ -384,6 +397,77 @@ test("MCP admin auth tools migrate, verify, and rotate the key in Vault", async 
       authorizationKey: "replacement-admin-key"
     });
     assert.equal(persisted.payload.data.authorized, true);
+  } finally {
+    restoreEnv();
+  }
+});
+
+test("Redshift tools isolate and route multiple named clusters", async () => {
+  const restoreEnv = setEnv({ MCP_ADMIN_AUTH_KEY: "" });
+  const queryCalls = [];
+  const redshiftService = {
+    async healthCheck(connection) {
+      return { database: connection.database, username: connection.username };
+    },
+    async query(connection, sql, parameters, maxRows) {
+      queryCalls.push({ connection, sql, parameters, maxRows });
+      return { command: "SELECT", rowCount: 1, fields: ["database"], rows: [{ database: connection.database }] };
+    }
+  };
+
+  try {
+    const { client } = createServiceClientMock();
+    const server = createMcpServer({
+      name: "openshift-mcp",
+      version: "0.1.0",
+      appName: "openshift",
+      serviceClient: client,
+      redshiftService,
+      configStore: createConfigStoreMock(),
+      vaultService: createVaultServiceMock()
+    });
+
+    for (const cluster of [
+      { clusterId: "analytics", host: "analytics.example.com", database: "warehouse", username: "analyst", password: "first-secret" },
+      { clusterId: "reporting", host: "reporting.example.com", database: "reports", username: "reporter", password: "second-secret" }
+    ]) {
+      const configured = await invokeTool(server, "redshift_set_cluster", {
+        ...cluster,
+        port: 5439,
+        ssl: true,
+        timeoutMs: 15000
+      });
+      assert.equal(configured.payload.ok, true);
+      assert.equal("username" in configured.payload.data, false);
+      assert.equal("password" in configured.payload.data, false);
+    }
+
+    const listed = await invokeTool(server, "redshift_list_clusters");
+    assert.deepEqual(listed.payload.data.map((cluster) => cluster.clusterId).sort(), ["analytics", "reporting"]);
+    assert.equal(listed.payload.data.some((cluster) => "password" in cluster), false);
+
+    await invokeTool(server, "redshift_query", {
+      clusterId: "analytics",
+      sql: "SELECT $1::varchar AS value",
+      parameters: ["one"],
+      maxRows: 100
+    });
+    await invokeTool(server, "redshift_query", {
+      clusterId: "reporting",
+      sql: "SELECT $1::varchar AS value",
+      parameters: ["two"],
+      maxRows: 100
+    });
+
+    assert.equal(queryCalls[0].connection.host, "analytics.example.com");
+    assert.equal(queryCalls[0].connection.password, "first-secret");
+    assert.equal(queryCalls[1].connection.host, "reporting.example.com");
+    assert.equal(queryCalls[1].connection.password, "second-secret");
+
+    const removed = await invokeTool(server, "redshift_remove_cluster", { clusterId: "analytics" });
+    assert.equal(removed.payload.data.deleted, true);
+    const remaining = await invokeTool(server, "redshift_list_clusters");
+    assert.deepEqual(remaining.payload.data.map((cluster) => cluster.clusterId), ["reporting"]);
   } finally {
     restoreEnv();
   }

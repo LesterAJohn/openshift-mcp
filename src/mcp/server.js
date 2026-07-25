@@ -37,6 +37,7 @@ export function createMcpServer({
   serviceClient,
   configStore,
   vaultService,
+  redshiftService,
   appName,
   defaultUserId = "default",
   allowSensitiveOutput = false,
@@ -63,6 +64,17 @@ export function createMcpServer({
   const resolvedDefaultUserId = String(defaultUserId ?? "default").trim() || "default";
   const normalizedTokenPathPrefix = normalizeTokenPathPrefix(tokenSecretPathPrefix);
   const resolvedTokenIndexPath = String(tokenIndexPath ?? getVaultTokenIndexPath(normalizedAppName)).trim();
+  const redshiftConfigKeyPrefix = "redshift.cluster.";
+
+  function normalizeClusterId(clusterId) {
+    const normalized = String(clusterId ?? "").trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(normalized)) {
+      const error = new Error("clusterId must use 1-63 lowercase letters, numbers, hyphens, or underscores");
+      error.status = 400;
+      throw error;
+    }
+    return normalized;
+  }
 
   function asText(value) {
     return {
@@ -182,6 +194,40 @@ export function createMcpServer({
 
   function getTokenMetadataConfigKey(userId) {
     return `${tokenMetadataConfigKeyPrefix}.${resolveUserId(userId)}`;
+  }
+
+  function getRedshiftConfigKey(clusterId) {
+    return `${redshiftConfigKeyPrefix}${normalizeClusterId(clusterId)}`;
+  }
+
+  function getRedshiftSecretPath(userId, clusterId) {
+    return `${normalizedAppName}/redshift/users/${normalizeUserIdForPath(resolveUserId(userId))}/clusters/${normalizeClusterId(clusterId)}`;
+  }
+
+  async function readRedshiftConnection(userId, clusterId) {
+    const resolvedUserId = resolveUserId(userId);
+    const normalizedClusterId = normalizeClusterId(clusterId);
+    const [configRecord, credentials] = await Promise.all([
+      configStore.getConfig(getRedshiftConfigKey(normalizedClusterId), resolvedUserId),
+      vaultService.getSecret(getRedshiftSecretPath(resolvedUserId, normalizedClusterId))
+    ]);
+
+    if (!configRecord) {
+      const error = new Error(`Redshift cluster not found: ${normalizedClusterId}`);
+      error.status = 404;
+      throw error;
+    }
+    if (!credentials?.username || !credentials?.password) {
+      const error = new Error(`Redshift credentials are missing for cluster: ${normalizedClusterId}`);
+      error.status = 422;
+      throw error;
+    }
+
+    return {
+      clusterId: normalizedClusterId,
+      metadata: configRecord.value,
+      connection: { ...configRecord.value, ...credentials }
+    };
   }
 
   function getScopeModel(userId = resolvedDefaultUserId) {
@@ -1024,6 +1070,134 @@ export function createMcpServer({
       };
     })
   );
+
+  if (redshiftService) {
+    server.tool(
+      "redshift_list_clusters",
+      "List Redshift clusters configured for a user without exposing credentials.",
+      { userId: z.string().min(1).optional() },
+      withErrorHandling(async ({ userId }) => {
+        const resolvedUserId = resolveUserId(userId);
+        const records = await configStore.listConfigs(redshiftConfigKeyPrefix, resolvedUserId);
+        return {
+          ok: true,
+          status: 200,
+          data: records.map((record) => ({
+            clusterId: record.key.slice(redshiftConfigKeyPrefix.length),
+            ...record.value,
+            updatedAt: record.updated_at
+          }))
+        };
+      })
+    );
+
+    server.tool(
+      "redshift_get_cluster",
+      "Get Redshift cluster connection metadata without exposing credentials.",
+      {
+        clusterId: z.string().min(1),
+        userId: z.string().min(1).optional()
+      },
+      withErrorHandling(async ({ clusterId, userId }) => {
+        const resolvedUserId = resolveUserId(userId);
+        const normalizedClusterId = normalizeClusterId(clusterId);
+        const record = await configStore.getConfig(getRedshiftConfigKey(normalizedClusterId), resolvedUserId);
+        if (!record) {
+          const error = new Error(`Redshift cluster not found: ${normalizedClusterId}`);
+          error.status = 404;
+          throw error;
+        }
+        return {
+          ok: true,
+          status: 200,
+          data: { clusterId: normalizedClusterId, ...record.value, updatedAt: record.updated_at }
+        };
+      })
+    );
+
+    server.tool(
+      "redshift_set_cluster",
+      "Create or replace a named Redshift cluster configuration and its Vault-backed credentials.",
+      {
+        clusterId: z.string().min(1),
+        host: z.string().min(1),
+        port: z.number().int().min(1).max(65535).default(5439),
+        database: z.string().min(1),
+        username: z.string().min(1),
+        password: z.string().min(1),
+        ssl: z.boolean().default(true),
+        timeoutMs: z.number().int().positive().default(15000),
+        userId: z.string().min(1).optional(),
+        authorizationKey: z.string().min(1).optional()
+      },
+      withErrorHandling(async ({ clusterId, host, port, database, username, password, ssl, timeoutMs, userId, authorizationKey }) => {
+        await assertAuthorized(authorizationKey);
+        const resolvedUserId = resolveUserId(userId);
+        const normalizedClusterId = normalizeClusterId(clusterId);
+        const metadata = { host, port, database, ssl, timeoutMs };
+        await vaultService.setSecret(getRedshiftSecretPath(resolvedUserId, normalizedClusterId), { username, password });
+        const record = await configStore.setConfig(getRedshiftConfigKey(normalizedClusterId), metadata, resolvedUserId);
+        return {
+          ok: true,
+          status: 200,
+          data: { clusterId: normalizedClusterId, ...record.value, updatedAt: record.updated_at }
+        };
+      })
+    );
+
+    server.tool(
+      "redshift_remove_cluster",
+      "Remove a named Redshift cluster configuration and its credentials.",
+      {
+        clusterId: z.string().min(1),
+        userId: z.string().min(1).optional(),
+        authorizationKey: z.string().min(1).optional()
+      },
+      withErrorHandling(async ({ clusterId, userId, authorizationKey }) => {
+        await assertAuthorized(authorizationKey);
+        const resolvedUserId = resolveUserId(userId);
+        const normalizedClusterId = normalizeClusterId(clusterId);
+        const [deleted] = await Promise.all([
+          configStore.deleteConfig(getRedshiftConfigKey(normalizedClusterId), resolvedUserId),
+          vaultService.deleteSecret(getRedshiftSecretPath(resolvedUserId, normalizedClusterId))
+        ]);
+        return { ok: true, status: 200, data: { clusterId: normalizedClusterId, deleted } };
+      })
+    );
+
+    server.tool(
+      "redshift_health_check",
+      "Test connectivity to a named Redshift cluster.",
+      {
+        clusterId: z.string().min(1),
+        userId: z.string().min(1).optional()
+      },
+      withErrorHandling(async ({ clusterId, userId }) => {
+        const selected = await readRedshiftConnection(userId, clusterId);
+        const data = await redshiftService.healthCheck(selected.connection);
+        return { ok: true, status: 200, data: { clusterId: selected.clusterId, ...data } };
+      })
+    );
+
+    server.tool(
+      "redshift_query",
+      "Run a parameterized SQL statement against a named Redshift cluster.",
+      {
+        clusterId: z.string().min(1),
+        sql: z.string().min(1),
+        parameters: z.array(z.unknown()).default([]),
+        maxRows: z.number().int().min(1).max(10000).default(1000),
+        userId: z.string().min(1).optional(),
+        authorizationKey: z.string().min(1).optional()
+      },
+      withErrorHandling(async ({ clusterId, sql, parameters, maxRows, userId, authorizationKey }) => {
+        await assertAuthorized(authorizationKey);
+        const selected = await readRedshiftConnection(userId, clusterId);
+        const data = await redshiftService.query(selected.connection, sql, parameters, maxRows);
+        return { ok: true, status: 200, data: { clusterId: selected.clusterId, ...data } };
+      })
+    );
+  }
 
   return server;
 }

@@ -1,6 +1,6 @@
 # openshift-mcp
 
-OpenShift-focused MCP server built from the `skeleton-mcp` architecture.
+OpenShift-focused MCP server with multi-cluster Amazon Redshift access, built from the `skeleton-mcp` architecture.
 
 This implementation keeps the skeleton contract intact:
 - Secrets are persistent in Vault.
@@ -17,11 +17,12 @@ Runtime flow:
 4. `src/services/configStore.js` persists configuration in Postgres (`${APP_NAME}_config`).
 5. `src/services/vault.js` persists secret material in Vault KV.
 6. `src/services/targetService.js` wraps OpenShift API requests.
-7. `src/mcp/server.js` registers OpenShift and token lifecycle MCP tools.
+7. `src/services/redshift.js` connects to the Redshift cluster selected by each request.
+8. `src/mcp/server.js` registers OpenShift, Redshift, and token lifecycle MCP tools.
 
 ## OpenShift MCP Tools
 
-The server exposes 32 OpenShift-specific tools, 3 MCP admin-auth tools, and 2 Postgres configuration tools (37 total).
+The server exposes 32 OpenShift-specific tools, 6 Redshift tools, 3 MCP admin-auth tools, and 2 Postgres configuration tools (43 total).
 
 Read tools:
 - `openshift_connection_info`
@@ -50,6 +51,9 @@ Read tools:
 - `openshift_list_subscriptions`
 - `openshift_get_resource_usage`
 - `openshift_get_user_token_metadata`
+- `redshift_list_clusters`
+- `redshift_get_cluster`
+- `redshift_health_check`
 - `config_get`
 
 Mutating tools:
@@ -59,6 +63,9 @@ Mutating tools:
 - `openshift_deactivate_user_token`
 - `openshift_resource_request` (mutating methods require authorization)
 - `openshift_api_request` (mutating methods require authorization)
+- `redshift_set_cluster`
+- `redshift_remove_cluster`
+- `redshift_query`
 - `config_set`
 
 If `MCP_ADMIN_AUTH_KEY` is set, all mutating tools require `authorizationKey`.
@@ -77,6 +84,35 @@ Dedicated tools cover routine operations with validated inputs:
 - Authorization: self-access reviews and RoleBindings
 - Extensibility: CRDs and Operator Lifecycle Manager subscriptions
 - Capacity: pod and node usage through `metrics.k8s.io`
+
+## Multi-Cluster Redshift
+
+Redshift connections are user-scoped and selected by the required `clusterId` argument. A single MCP process can hold any number of named clusters for each user.
+
+- `redshift_set_cluster` creates or replaces a cluster. Connection metadata is stored in Postgres, while `username` and `password` are stored in Vault.
+- `redshift_list_clusters` and `redshift_get_cluster` return metadata without credentials.
+- `redshift_health_check` validates the selected connection.
+- `redshift_query` runs parameterized SQL and caps returned rows with `maxRows`.
+- `redshift_remove_cluster` deletes both metadata and credentials for only the selected cluster.
+
+Cluster configuration keys use `redshift.cluster.{clusterId}`. Credentials use `${APP_NAME}/redshift/users/{userId}/clusters/{clusterId}` in Vault. Cluster IDs accept 1-63 lowercase letters, numbers, hyphens, or underscores. When `MCP_ADMIN_AUTH_KEY` is configured, setting/removing clusters and running SQL require `authorizationKey`.
+
+Example cluster registration:
+
+```json
+{
+  "clusterId": "analytics",
+  "host": "analytics.abc123.us-east-1.redshift.amazonaws.com",
+  "port": 5439,
+  "database": "warehouse",
+  "username": "mcp_user",
+  "password": "replace-with-secret",
+  "ssl": true,
+  "timeoutMs": 15000
+}
+```
+
+Configure another cluster with a different `clusterId`, then pass the intended ID to every health check or query. SQL parameters use PostgreSQL placeholders such as `$1`, `$2`, and are supplied through the `parameters` array.
 
 ## Complete API Coverage
 

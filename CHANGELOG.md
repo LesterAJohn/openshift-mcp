@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added user-scoped multi-cluster Redshift registration with Postgres metadata and Vault-backed credentials.
+- Added Redshift cluster listing, lookup, removal, health check, and parameterized query tools selected by `clusterId`.
 - Added MCP admin authorization status, verification, and rotation tools.
 - Added automatic SHA-256 bootstrap verifier migration from `MCP_ADMIN_AUTH_KEY` to Vault.
 - Changed all mutating tool guards to use fail-closed, Vault-backed authorization with immediate key rotation.
