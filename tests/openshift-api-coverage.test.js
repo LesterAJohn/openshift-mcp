@@ -108,3 +108,71 @@ test("resource path validation rejects subresources without a resource name", as
     /name is required when subresource is provided/
   );
 });
+
+test("dedicated workload and networking methods use canonical API paths", async () => {
+  const client = createClient();
+  const requests = await captureRequests(async () => {
+    await client.getPod("team-a", "api-123");
+    await client.getPodLogs("team-a", "api-123", { container: "api", tailLines: 100, previous: true });
+    await client.listEvents({ namespace: "team-a", type: "Warning" });
+    await client.listDeployments("team-a", { labelSelector: "app=api" });
+    await client.scaleDeployment("team-a", "api", 3);
+    await client.rolloutRestart("team-a", "api", { restartedAt: "2026-07-24T00:00:00.000Z" });
+    await client.listServices("team-a");
+    await client.listRoutes("team-a");
+    await client.getRoute("team-a", "api");
+  });
+
+  assert.deepEqual(
+    requests.map(({ url }) => new URL(url).pathname),
+    [
+      "/api/v1/namespaces/team-a/pods/api-123",
+      "/api/v1/namespaces/team-a/pods/api-123/log",
+      "/api/v1/namespaces/team-a/events",
+      "/apis/apps/v1/namespaces/team-a/deployments",
+      "/apis/apps/v1/namespaces/team-a/deployments/api/scale",
+      "/apis/apps/v1/namespaces/team-a/deployments/api",
+      "/api/v1/namespaces/team-a/services",
+      "/apis/route.openshift.io/v1/namespaces/team-a/routes",
+      "/apis/route.openshift.io/v1/namespaces/team-a/routes/api"
+    ]
+  );
+  assert.equal(requests[4].options.method, "PATCH");
+  assert.equal(requests[5].options.method, "PATCH");
+  assert.equal(new URL(requests[1].url).searchParams.get("tailLines"), "100");
+  assert.equal(new URL(requests[2].url).searchParams.get("fieldSelector"), "type=Warning");
+});
+
+test("dedicated platform, RBAC, Operator, and metrics methods use canonical API paths", async () => {
+  const client = createClient();
+  const requests = await captureRequests(async () => {
+    await client.getVersion();
+    await client.listClusterOperators();
+    await client.getClusterVersion();
+    await client.listNodes();
+    await client.canI({ verb: "get", resource: "pods", namespace: "team-a" });
+    await client.listRoleBindings({ namespace: "team-a" });
+    await client.listCrds();
+    await client.listSubscriptions({ namespace: "openshift-operators" });
+    await client.getResourceUsage({ resourceType: "pods", namespace: "team-a" });
+  });
+
+  assert.deepEqual(
+    requests.map(({ url }) => new URL(url).pathname),
+    [
+      "/version",
+      "/apis/config.openshift.io/v1/clusteroperators",
+      "/apis/config.openshift.io/v1/clusterversions/version",
+      "/api/v1/nodes",
+      "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+      "/apis/rbac.authorization.k8s.io/v1/namespaces/team-a/rolebindings",
+      "/apis/apiextensions.k8s.io/v1/customresourcedefinitions",
+      "/apis/operators.coreos.com/v1alpha1/namespaces/openshift-operators/subscriptions",
+      "/apis/metrics.k8s.io/v1beta1/namespaces/team-a/pods"
+    ]
+  );
+  assert.equal(requests[4].options.method, "POST");
+  const review = JSON.parse(requests[4].options.body);
+  assert.equal(review.kind, "SelfSubjectAccessReview");
+  assert.equal(review.spec.resourceAttributes.namespace, "team-a");
+});

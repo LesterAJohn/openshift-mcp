@@ -148,6 +148,41 @@ export function createMcpServer({
     return configStore.setConfig(key, metadata, resolveUserId(userId));
   }
 
+  function registerOpenShiftReadTool(toolName, description, schema, operation) {
+    server.tool(
+      toolName,
+      description,
+      schema,
+      withErrorHandling(async (args) => {
+        const tokenPayload = await readUserTokenPayload(args.userId);
+        const bearerToken = String(tokenPayload.token ?? "").trim();
+        return {
+          ok: true,
+          status: 200,
+          data: await operation(args, bearerToken)
+        };
+      })
+    );
+  }
+
+  function registerOpenShiftMutatingTool(toolName, description, schema, operation) {
+    server.tool(
+      toolName,
+      description,
+      { ...schema, authorizationKey: z.string().min(1).optional() },
+      withErrorHandling(async (args) => {
+        assertAuthorized(args.authorizationKey);
+        const tokenPayload = await readUserTokenPayload(args.userId);
+        const bearerToken = String(tokenPayload.token ?? "").trim();
+        return {
+          ok: true,
+          status: 200,
+          data: await operation(args, bearerToken)
+        };
+      })
+    );
+  }
+
   server.tool(
     "openshift_connection_info",
     "Return OpenShift MCP server, persistence, and scope model details.",
@@ -378,6 +413,226 @@ export function createMcpServer({
         })
       };
     })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_get_version",
+    "Get the OpenShift and Kubernetes API server version.",
+    { userId: z.string().min(1).optional() },
+    (_args, bearerToken) => serviceClient.getVersion({ bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_get_pod",
+    "Get one pod and its container/status details.",
+    {
+      namespace: z.string().min(1),
+      podName: z.string().min(1),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, podName }, bearerToken) => serviceClient.getPod(namespace, podName, { bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_get_pod_logs",
+    "Get pod logs with container, previous instance, time, and tail controls.",
+    {
+      namespace: z.string().min(1),
+      podName: z.string().min(1),
+      container: z.string().min(1).optional(),
+      previous: z.boolean().optional(),
+      tailLines: z.number().int().nonnegative().optional(),
+      sinceSeconds: z.number().int().positive().optional(),
+      timestamps: z.boolean().optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, podName, container, previous, tailLines, sinceSeconds, timestamps }, bearerToken) =>
+      serviceClient.getPodLogs(namespace, podName, {
+        container,
+        previous,
+        tailLines,
+        sinceSeconds,
+        timestamps,
+        bearerToken
+      })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_events",
+    "List cluster or namespace events with field and event-type filters.",
+    {
+      namespace: z.string().min(1).optional(),
+      fieldSelector: z.string().min(1).optional(),
+      type: z.enum(["Normal", "Warning"]).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, fieldSelector, type }, bearerToken) =>
+      serviceClient.listEvents({ namespace, fieldSelector, type, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_deployments",
+    "List deployments in a namespace.",
+    {
+      namespace: z.string().min(1),
+      labelSelector: z.string().min(1).optional(),
+      fieldSelector: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, labelSelector, fieldSelector }, bearerToken) =>
+      serviceClient.listDeployments(namespace, { labelSelector, fieldSelector, bearerToken })
+  );
+
+  registerOpenShiftMutatingTool(
+    "openshift_scale_deployment",
+    "Set deployment replicas through the scale subresource.",
+    {
+      namespace: z.string().min(1),
+      deploymentName: z.string().min(1),
+      replicas: z.number().int().nonnegative(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, deploymentName, replicas }, bearerToken) =>
+      serviceClient.scaleDeployment(namespace, deploymentName, replicas, { bearerToken })
+  );
+
+  registerOpenShiftMutatingTool(
+    "openshift_rollout_restart",
+    "Restart a deployment rollout by updating its pod-template restart annotation.",
+    {
+      namespace: z.string().min(1),
+      deploymentName: z.string().min(1),
+      restartedAt: z.string().datetime().optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, deploymentName, restartedAt }, bearerToken) =>
+      serviceClient.rolloutRestart(namespace, deploymentName, { restartedAt, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_services",
+    "List Kubernetes services in a namespace.",
+    {
+      namespace: z.string().min(1),
+      labelSelector: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, labelSelector }, bearerToken) =>
+      serviceClient.listServices(namespace, { labelSelector, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_routes",
+    "List OpenShift routes in a namespace.",
+    {
+      namespace: z.string().min(1),
+      labelSelector: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, labelSelector }, bearerToken) => serviceClient.listRoutes(namespace, { labelSelector, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_get_route",
+    "Get one OpenShift route.",
+    {
+      namespace: z.string().min(1),
+      routeName: z.string().min(1),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, routeName }, bearerToken) => serviceClient.getRoute(namespace, routeName, { bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_cluster_operators",
+    "List OpenShift ClusterOperators and their conditions.",
+    { userId: z.string().min(1).optional() },
+    (_args, bearerToken) => serviceClient.listClusterOperators({ bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_get_cluster_version",
+    "Get ClusterVersion status, desired version, history, and available updates.",
+    {
+      name: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ name }, bearerToken) => serviceClient.getClusterVersion({ name, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_nodes",
+    "List cluster nodes and their conditions.",
+    {
+      labelSelector: z.string().min(1).optional(),
+      fieldSelector: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ labelSelector, fieldSelector }, bearerToken) =>
+      serviceClient.listNodes({ labelSelector, fieldSelector, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_can_i",
+    "Check whether the current user's OpenShift token may perform a resource action.",
+    {
+      verb: z.string().min(1),
+      resource: z.string().min(1),
+      apiGroup: z.string().optional(),
+      namespace: z.string().min(1).optional(),
+      resourceName: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ verb, resource, apiGroup, namespace, resourceName }, bearerToken) =>
+      serviceClient.canI({ verb, resource, apiGroup, namespace, resourceName, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_role_bindings",
+    "List RoleBindings across the cluster or in one namespace.",
+    {
+      namespace: z.string().min(1).optional(),
+      labelSelector: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, labelSelector }, bearerToken) =>
+      serviceClient.listRoleBindings({ namespace, labelSelector, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_crds",
+    "List installed CustomResourceDefinitions.",
+    {
+      labelSelector: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ labelSelector }, bearerToken) => serviceClient.listCrds({ labelSelector, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_list_subscriptions",
+    "List Operator Lifecycle Manager subscriptions across the cluster or in one namespace.",
+    {
+      namespace: z.string().min(1).optional(),
+      labelSelector: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ namespace, labelSelector }, bearerToken) =>
+      serviceClient.listSubscriptions({ namespace, labelSelector, bearerToken })
+  );
+
+  registerOpenShiftReadTool(
+    "openshift_get_resource_usage",
+    "Get pod or node resource usage from the Kubernetes Metrics API.",
+    {
+      resourceType: z.enum(["pods", "nodes"]),
+      namespace: z.string().min(1).optional(),
+      name: z.string().min(1).optional(),
+      labelSelector: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    ({ resourceType, namespace, name, labelSelector }, bearerToken) =>
+      serviceClient.getResourceUsage({ resourceType, namespace, name, labelSelector, bearerToken })
   );
 
   server.tool(

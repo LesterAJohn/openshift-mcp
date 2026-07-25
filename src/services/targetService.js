@@ -78,7 +78,6 @@ export class TargetServiceClient {
     if (!["none", "bearer"].includes(this.authMode)) {
       throw new Error("OPENSHIFT_AUTH_MODE must be one of: none, bearer");
     }
-
   }
 
   getConnectionInfo() {
@@ -175,8 +174,8 @@ export class TargetServiceClient {
     }
   }
 
-  async healthCheck() {
-    return this.request({ method: "GET", path: "/healthz" });
+  async healthCheck({ bearerToken } = {}) {
+    return this.request({ method: "GET", path: "/healthz", bearerToken });
   }
 
   async discoverApiGroups({ bearerToken } = {}) {
@@ -252,6 +251,191 @@ export class TargetServiceClient {
         labelSelector,
         fieldSelector
       },
+      bearerToken
+    });
+  }
+
+  async getPod(namespace, podName, { bearerToken } = {}) {
+    return this.resourceRequest({ apiVersion: "v1", resource: "pods", namespace, name: podName, bearerToken });
+  }
+
+  async getPodLogs(namespace, podName, options = {}) {
+    const { container, previous, tailLines, sinceSeconds, timestamps, bearerToken } = options;
+    return this.resourceRequest({
+      apiVersion: "v1",
+      resource: "pods",
+      namespace,
+      name: podName,
+      subresource: "log",
+      query: { container, previous, tailLines, sinceSeconds, timestamps },
+      bearerToken
+    });
+  }
+
+  async listEvents({ namespace, fieldSelector, type, bearerToken } = {}) {
+    const combinedFieldSelector = [fieldSelector, type ? `type=${type}` : ""].filter(Boolean).join(",");
+    return this.resourceRequest({
+      apiVersion: "v1",
+      resource: "events",
+      namespace,
+      query: { fieldSelector: combinedFieldSelector || undefined },
+      bearerToken
+    });
+  }
+
+  async listDeployments(namespace, { labelSelector, fieldSelector, bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "apps/v1",
+      resource: "deployments",
+      namespace,
+      query: { labelSelector, fieldSelector },
+      bearerToken
+    });
+  }
+
+  async scaleDeployment(namespace, deploymentName, replicas, { bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "apps/v1",
+      resource: "deployments",
+      namespace,
+      name: deploymentName,
+      subresource: "scale",
+      method: "PATCH",
+      headers: { "Content-Type": "application/merge-patch+json" },
+      body: { spec: { replicas } },
+      bearerToken
+    });
+  }
+
+  async rolloutRestart(namespace, deploymentName, { restartedAt = new Date().toISOString(), bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "apps/v1",
+      resource: "deployments",
+      namespace,
+      name: deploymentName,
+      method: "PATCH",
+      headers: { "Content-Type": "application/strategic-merge-patch+json" },
+      body: {
+        spec: {
+          template: {
+            metadata: {
+              annotations: { "kubectl.kubernetes.io/restartedAt": restartedAt }
+            }
+          }
+        }
+      },
+      bearerToken
+    });
+  }
+
+  async listServices(namespace, { labelSelector, bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "v1",
+      resource: "services",
+      namespace,
+      query: { labelSelector },
+      bearerToken
+    });
+  }
+
+  async listRoutes(namespace, { labelSelector, bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "route.openshift.io/v1",
+      resource: "routes",
+      namespace,
+      query: { labelSelector },
+      bearerToken
+    });
+  }
+
+  async getRoute(namespace, routeName, { bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "route.openshift.io/v1",
+      resource: "routes",
+      namespace,
+      name: routeName,
+      bearerToken
+    });
+  }
+
+  async listClusterOperators({ bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "config.openshift.io/v1",
+      resource: "clusteroperators",
+      bearerToken
+    });
+  }
+
+  async getClusterVersion({ name = "version", bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "config.openshift.io/v1",
+      resource: "clusterversions",
+      name,
+      bearerToken
+    });
+  }
+
+  async listNodes({ labelSelector, fieldSelector, bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "v1",
+      resource: "nodes",
+      query: { labelSelector, fieldSelector },
+      bearerToken
+    });
+  }
+
+  async canI({ verb, resource, apiGroup = "", namespace, resourceName, bearerToken }) {
+    return this.resourceRequest({
+      apiVersion: "authorization.k8s.io/v1",
+      resource: "selfsubjectaccessreviews",
+      method: "POST",
+      body: {
+        apiVersion: "authorization.k8s.io/v1",
+        kind: "SelfSubjectAccessReview",
+        spec: {
+          resourceAttributes: { verb, resource, group: apiGroup, namespace, name: resourceName }
+        }
+      },
+      bearerToken
+    });
+  }
+
+  async listRoleBindings({ namespace, labelSelector, bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      resource: "rolebindings",
+      namespace,
+      query: { labelSelector },
+      bearerToken
+    });
+  }
+
+  async listCrds({ labelSelector, bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "apiextensions.k8s.io/v1",
+      resource: "customresourcedefinitions",
+      query: { labelSelector },
+      bearerToken
+    });
+  }
+
+  async listSubscriptions({ namespace, labelSelector, bearerToken } = {}) {
+    return this.resourceRequest({
+      apiVersion: "operators.coreos.com/v1alpha1",
+      resource: "subscriptions",
+      namespace,
+      query: { labelSelector },
+      bearerToken
+    });
+  }
+
+  async getResourceUsage({ resourceType, namespace, name, labelSelector, bearerToken }) {
+    return this.resourceRequest({
+      apiVersion: "metrics.k8s.io/v1beta1",
+      resource: resourceType,
+      namespace: resourceType === "pods" ? namespace : undefined,
+      name,
+      query: { labelSelector },
       bearerToken
     });
   }

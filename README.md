@@ -21,9 +21,12 @@ Runtime flow:
 
 ## OpenShift MCP Tools
 
+The server exposes 32 OpenShift-specific tools plus 2 Postgres configuration tools (34 total).
+
 Read tools:
 - `openshift_connection_info`
 - `openshift_health_check`
+- `openshift_get_version`
 - `openshift_list_endpoints`
 - `openshift_discover_api_groups`
 - `openshift_discover_api_resources`
@@ -31,10 +34,27 @@ Read tools:
 - `openshift_list_projects`
 - `openshift_get_project`
 - `openshift_list_pods`
+- `openshift_get_pod`
+- `openshift_get_pod_logs`
+- `openshift_list_events`
+- `openshift_list_deployments`
+- `openshift_list_services`
+- `openshift_list_routes`
+- `openshift_get_route`
+- `openshift_list_cluster_operators`
+- `openshift_get_cluster_version`
+- `openshift_list_nodes`
+- `openshift_can_i`
+- `openshift_list_role_bindings`
+- `openshift_list_crds`
+- `openshift_list_subscriptions`
+- `openshift_get_resource_usage`
 - `openshift_get_user_token_metadata`
 - `config_get`
 
 Mutating tools:
+- `openshift_scale_deployment`
+- `openshift_rollout_restart`
 - `openshift_set_user_token`
 - `openshift_deactivate_user_token`
 - `openshift_resource_request` (mutating methods require authorization)
@@ -42,6 +62,14 @@ Mutating tools:
 - `config_set`
 
 If `MCP_ADMIN_AUTH_KEY` is set, all mutating tools require `authorizationKey`.
+
+Dedicated tools cover routine operations with validated inputs:
+- Workloads and diagnostics: pods, logs, events, deployments, scaling, and rollout restart
+- Networking: services and OpenShift routes
+- Platform health: version, ClusterOperators, ClusterVersion, and nodes
+- Authorization: self-access reviews and RoleBindings
+- Extensibility: CRDs and Operator Lifecycle Manager subscriptions
+- Capacity: pod and node usage through `metrics.k8s.io`
 
 ## Complete API Coverage
 

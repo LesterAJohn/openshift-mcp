@@ -29,6 +29,8 @@ function createServiceClientMock() {
   const calls = {
     discoverApiGroups: 0,
     discoverApiResources: 0,
+    getVersion: 0,
+    scaleDeployment: 0,
     resourceRequest: 0,
     listProjects: 0,
     request: 0
@@ -61,6 +63,14 @@ function createServiceClientMock() {
     async resourceRequest(payload) {
       calls.resourceRequest += 1;
       return { status: 200, ...payload };
+    },
+    async getVersion() {
+      calls.getVersion += 1;
+      return { status: 200, data: { gitVersion: "v1.30.0" } };
+    },
+    async scaleDeployment(namespace, deploymentName, replicas) {
+      calls.scaleDeployment += 1;
+      return { status: 200, data: { namespace, deploymentName, replicas } };
     },
     async listProjects() {
       calls.listProjects += 1;
@@ -268,6 +278,45 @@ test("discovery tools expose installed API groups and resources", async () => {
     assert.equal(resources.payload.data.data.groupVersion, "operators.coreos.com/v1alpha1");
     assert.equal(calls.discoverApiGroups, 1);
     assert.equal(calls.discoverApiResources, 1);
+  } finally {
+    restoreEnv();
+  }
+});
+
+test("dedicated tools delegate reads and authorize mutations", async () => {
+  const restoreEnv = setEnv({ MCP_ADMIN_AUTH_KEY: "super-secret" });
+
+  try {
+    const { client, calls } = createServiceClientMock();
+    const server = createMcpServer({
+      name: "openshift-mcp",
+      version: "0.1.0",
+      appName: "openshift",
+      serviceClient: client,
+      configStore: createConfigStoreMock(),
+      vaultService: createVaultServiceMock()
+    });
+
+    const version = await invokeTool(server, "openshift_get_version");
+    assert.equal(version.payload.data.data.gitVersion, "v1.30.0");
+    assert.equal(calls.getVersion, 1);
+
+    const unauthorized = await invokeTool(server, "openshift_scale_deployment", {
+      namespace: "team-a",
+      deploymentName: "api",
+      replicas: 3
+    });
+    assert.equal(unauthorized.result.isError, true);
+    assert.equal(unauthorized.payload.status, 401);
+
+    const authorized = await invokeTool(server, "openshift_scale_deployment", {
+      namespace: "team-a",
+      deploymentName: "api",
+      replicas: 3,
+      authorizationKey: "super-secret"
+    });
+    assert.equal(authorized.payload.data.data.replicas, 3);
+    assert.equal(calls.scaleDeployment, 1);
   } finally {
     restoreEnv();
   }
