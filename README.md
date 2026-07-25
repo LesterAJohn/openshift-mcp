@@ -25,6 +25,9 @@ Read tools:
 - `openshift_connection_info`
 - `openshift_health_check`
 - `openshift_list_endpoints`
+- `openshift_discover_api_groups`
+- `openshift_discover_api_resources`
+- `openshift_discover_openapi`
 - `openshift_list_projects`
 - `openshift_get_project`
 - `openshift_list_pods`
@@ -34,10 +37,31 @@ Read tools:
 Mutating tools:
 - `openshift_set_user_token`
 - `openshift_deactivate_user_token`
+- `openshift_resource_request` (mutating methods require authorization)
 - `openshift_api_request` (mutating methods require authorization)
 - `config_set`
 
 If `MCP_ADMIN_AUTH_KEY` is set, all mutating tools require `authorizationKey`.
+
+## Complete API Coverage
+
+OpenShift API availability varies by release, enabled cluster features, aggregated API servers, installed Operators, and CustomResourceDefinitions. For that reason, complete coverage is discovery-driven rather than a fixed list of hard-coded endpoints.
+
+1. `openshift_discover_api_groups` reads `/api` and `/apis` to enumerate every installed core and grouped API version.
+2. `openshift_discover_api_resources` reads the selected version endpoint and returns its resources, namespaced scope, supported verbs, short names, categories, and subresources.
+3. `openshift_discover_openapi` reads `/openapi/v3` and its returned schema paths for request and response schemas.
+4. `openshift_resource_request` addresses any discovered resource using `apiVersion`, plural `resource`, optional `namespace`, optional `name`, and optional `subresource`.
+5. `openshift_api_request` covers non-resource and specialized endpoints by raw path.
+
+This covers Kubernetes APIs, OpenShift APIs, aggregated APIs such as metrics, Operator Lifecycle Manager APIs, installed Operator APIs, CRDs, and future APIs without requiring a server release. Actual discovery results and allowed operations are constrained by the selected user's OpenShift RBAC permissions.
+
+Examples supported by `openshift_resource_request`:
+- Core namespaced resource: `apiVersion=v1`, `resource=pods`, `namespace=default`
+- Cluster-scoped resource: `apiVersion=v1`, `resource=nodes`
+- OpenShift resource: `apiVersion=route.openshift.io/v1`, `resource=routes`, `namespace=my-project`
+- Operator resource: `apiVersion=operators.coreos.com/v1alpha1`, `resource=subscriptions`, `namespace=openshift-operators`
+- Arbitrary CRD: use the `apiVersion` and plural resource returned by discovery
+- Subresource: set `name` and `subresource`, such as `deployments/{name}/scale` or `pods/{name}/log`
 
 ## Multi-User Token Model
 
@@ -73,7 +97,6 @@ OpenShift:
 - `OPENSHIFT_API_BASE_URL`
 - `OPENSHIFT_TIMEOUT_MS`
 - `OPENSHIFT_AUTH_MODE` (`none`, `bearer`)
-- `OPENSHIFT_BEARER_TOKEN`
 - `OPENSHIFT_USER_TOKEN_SECRET_PATH_PREFIX`
 - `OPENSHIFT_TOKEN_INDEX_PATH`
 - `OPENSHIFT_TOKEN_METADATA_CONFIG_KEY_PREFIX`

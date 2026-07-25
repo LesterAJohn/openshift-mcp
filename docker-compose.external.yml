@@ -1,11 +1,15 @@
 services:
   mcp-http:
     image: node:20
-    container_name: skeleton-mcp-http
+    container_name: openshift-mcp-http
     restart: unless-stopped
     working_dir: /app
     environment:
-      APP_NAME: ${APP_NAME:-skeleton}
+      APP_NAME: ${APP_NAME:-openshift}
+      OPENSHIFT_API_BASE_URL: ${OPENSHIFT_API_BASE_URL:?set OPENSHIFT_API_BASE_URL}
+      OPENSHIFT_AUTH_MODE: bearer
+      OPENSHIFT_USER_TOKEN_SECRET_PATH_PREFIX: openshift/tokens/users
+      OPENSHIFT_TOKEN_INDEX_PATH: openshift/token-index
       POSTGRES_HOST: ${POSTGRES_HOST:?set POSTGRES_HOST for external Postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:?set POSTGRES_PORT for external Postgres}
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB for external Postgres}
@@ -19,7 +23,7 @@ services:
       VAULT_AGENT_LISTENER_ENABLED: "true"
       VAULT_AGENT_LISTENER_ADDR: http://127.0.0.1:8100
       VAULT_KV_MOUNT: secret
-      MCP_SERVER_NAME: skeleton-mcp
+      MCP_SERVER_NAME: openshift-mcp
       MCP_SERVER_VERSION: 0.1.0
       MCP_ALLOW_SENSITIVE_OUTPUT: "false"
       MCP_CONFIG_DEFAULT_USER_ID: default

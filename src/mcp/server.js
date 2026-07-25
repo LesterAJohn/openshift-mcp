@@ -211,6 +211,114 @@ export function createMcpServer({
   );
 
   server.tool(
+    "openshift_discover_api_groups",
+    "Discover every Kubernetes, OpenShift, aggregated, operator, and custom API group/version installed on the cluster.",
+    {
+      userId: z.string().min(1).optional()
+    },
+    withErrorHandling(async ({ userId }) => {
+      const tokenPayload = await readUserTokenPayload(userId);
+      const bearerToken = String(tokenPayload.token ?? "").trim();
+      return {
+        ok: true,
+        status: 200,
+        data: await serviceClient.discoverApiGroups({ bearerToken })
+      };
+    })
+  );
+
+  server.tool(
+    "openshift_discover_api_resources",
+    "Discover resources, scope, verbs, short names, categories, and subresources for an installed API version.",
+    {
+      apiVersion: z.string().min(1),
+      userId: z.string().min(1).optional()
+    },
+    withErrorHandling(async ({ apiVersion, userId }) => {
+      const tokenPayload = await readUserTokenPayload(userId);
+      const bearerToken = String(tokenPayload.token ?? "").trim();
+      return {
+        ok: true,
+        status: 200,
+        data: await serviceClient.discoverApiResources(apiVersion, { bearerToken })
+      };
+    })
+  );
+
+  server.tool(
+    "openshift_discover_openapi",
+    "List OpenAPI v3 schemas or retrieve one schema using an api/... or apis/... path returned by the index.",
+    {
+      schemaPath: z.string().min(1).optional(),
+      userId: z.string().min(1).optional()
+    },
+    withErrorHandling(async ({ schemaPath, userId }) => {
+      const tokenPayload = await readUserTokenPayload(userId);
+      const bearerToken = String(tokenPayload.token ?? "").trim();
+      return {
+        ok: true,
+        status: 200,
+        data: await serviceClient.discoverOpenApi({ schemaPath, bearerToken })
+      };
+    })
+  );
+
+  server.tool(
+    "openshift_resource_request",
+    "Operate on any discovered core, OpenShift, aggregated, operator, or custom resource using structured coordinates.",
+    {
+      apiVersion: z.string().min(1),
+      resource: z.string().min(1),
+      namespace: z.string().min(1).optional(),
+      name: z.string().min(1).optional(),
+      subresource: z.string().min(1).optional(),
+      method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).default("GET"),
+      query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+      body: z.unknown().optional(),
+      headers: z.record(z.string(), z.string()).optional(),
+      userId: z.string().min(1).optional(),
+      authorizationKey: z.string().min(1).optional()
+    },
+    withErrorHandling(async ({
+      apiVersion,
+      resource,
+      namespace,
+      name,
+      subresource,
+      method,
+      query,
+      body,
+      headers,
+      userId,
+      authorizationKey
+    }) => {
+      const normalizedMethod = normalizeMethod(method);
+      if (MUTATING_METHODS.has(normalizedMethod)) {
+        assertAuthorized(authorizationKey);
+      }
+
+      const tokenPayload = await readUserTokenPayload(userId);
+      const bearerToken = String(tokenPayload.token ?? "").trim();
+      return {
+        ok: true,
+        status: 200,
+        data: await serviceClient.resourceRequest({
+          apiVersion,
+          resource,
+          namespace,
+          name,
+          subresource,
+          method: normalizedMethod,
+          query,
+          body,
+          headers,
+          bearerToken
+        })
+      };
+    })
+  );
+
+  server.tool(
     "openshift_list_projects",
     "List OpenShift projects using the user's Vault-managed token.",
     {

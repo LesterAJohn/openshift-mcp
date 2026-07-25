@@ -32,6 +32,37 @@ function parseResponseBody(contentType, text) {
   return text;
 }
 
+function encodePathSegment(value, label) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    throw new Error(`${label} is required`);
+  }
+
+  return encodeURIComponent(normalized);
+}
+
+function buildResourcePath({ apiVersion, resource, namespace, name, subresource }) {
+  const normalizedApiVersion = String(apiVersion ?? "").trim();
+  const versionParts = normalizedApiVersion.split("/");
+  if (versionParts.length < 1 || versionParts.length > 2 || versionParts.some((part) => !part.trim())) {
+    throw new Error("apiVersion must be a core version such as v1 or a grouped version such as apps/v1");
+  }
+
+  const prefix =
+    versionParts.length === 1
+      ? `/api/${encodePathSegment(versionParts[0], "apiVersion")}`
+      : `/apis/${encodePathSegment(versionParts[0], "API group")}/${encodePathSegment(versionParts[1], "API version")}`;
+  const namespacePath = namespace ? `/namespaces/${encodePathSegment(namespace, "namespace")}` : "";
+  const namePath = name ? `/${encodePathSegment(name, "name")}` : "";
+  const subresourcePath = subresource ? `/${encodePathSegment(subresource, "subresource")}` : "";
+
+  if (subresourcePath && !namePath) {
+    throw new Error("name is required when subresource is provided");
+  }
+
+  return `${prefix}${namespacePath}/${encodePathSegment(resource, "resource")}${namePath}${subresourcePath}`;
+}
+
 export class TargetServiceClient {
   constructor({
     apiBaseUrl,
@@ -48,9 +79,6 @@ export class TargetServiceClient {
       throw new Error("OPENSHIFT_AUTH_MODE must be one of: none, bearer");
     }
 
-    if (this.authMode === "bearer" && !this.defaultBearerToken) {
-      throw new Error("OPENSHIFT_BEARER_TOKEN is required when OPENSHIFT_AUTH_MODE=bearer");
-    }
   }
 
   getConnectionInfo() {
@@ -64,6 +92,9 @@ export class TargetServiceClient {
 
   listKnownEndpoints() {
     return [
+      { method: "GET", path: "/api", description: "Discover Kubernetes core API versions" },
+      { method: "GET", path: "/apis", description: "Discover all installed API groups and versions" },
+      { method: "GET", path: "/openapi/v3", description: "Discover OpenAPI v3 schema documents" },
       { method: "GET", path: "/version", description: "OpenShift API server version details" },
       { method: "GET", path: "/healthz", description: "OpenShift API server health endpoint" },
       {
@@ -89,6 +120,11 @@ export class TargetServiceClient {
 
     if (this.authMode === "bearer") {
       const effectiveToken = String(bearerToken ?? "").trim() || this.defaultBearerToken;
+      if (!effectiveToken) {
+        const error = new Error("No OpenShift bearer token is configured for this user");
+        error.status = 401;
+        throw error;
+      }
       requestHeaders.Authorization = `Bearer ${effectiveToken}`;
     }
 
@@ -141,6 +177,51 @@ export class TargetServiceClient {
 
   async healthCheck() {
     return this.request({ method: "GET", path: "/healthz" });
+  }
+
+  async discoverApiGroups({ bearerToken } = {}) {
+    const [core, groups] = await Promise.all([
+      this.request({ method: "GET", path: "/api", bearerToken }),
+      this.request({ method: "GET", path: "/apis", bearerToken })
+    ]);
+    return { core, groups };
+  }
+
+  async discoverApiResources(apiVersion, { bearerToken } = {}) {
+    const path = buildResourcePath({ apiVersion, resource: "__discovery__" }).replace(/\/__discovery__$/, "");
+    return this.request({ method: "GET", path, bearerToken });
+  }
+
+  async discoverOpenApi({ schemaPath, bearerToken } = {}) {
+    const normalizedSchemaPath = String(schemaPath ?? "").trim().replace(/^\/+/, "");
+    if (normalizedSchemaPath && !/^(api|apis)\//.test(normalizedSchemaPath)) {
+      throw new Error("schemaPath must be an api/... or apis/... path returned by /openapi/v3");
+    }
+
+    const path = normalizedSchemaPath ? `/openapi/v3/${normalizedSchemaPath}` : "/openapi/v3";
+    return this.request({ method: "GET", path, bearerToken });
+  }
+
+  async resourceRequest({
+    apiVersion,
+    resource,
+    namespace,
+    name,
+    subresource,
+    method = "GET",
+    query,
+    body,
+    headers,
+    bearerToken
+  }) {
+    return this.request({
+      method,
+      path: buildResourcePath({ apiVersion, resource, namespace, name, subresource }),
+      query,
+      body,
+      headers,
+      bearerToken
+    });
   }
 
   async getVersion({ bearerToken } = {}) {

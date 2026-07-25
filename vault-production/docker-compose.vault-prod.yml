@@ -1,19 +1,19 @@
 services:
   vault-unseal-key-init:
     image: node:20
-    container_name: skeleton-mcp-vault-unseal-key-init
+    container_name: openshift-mcp-vault-unseal-key-init
     restart: "no"
     working_dir: /app
     command: sh -c "npm run vault:unseal-key -- --json"
     environment:
-      APP_NAME: ${APP_NAME:-skeleton}
+      APP_NAME: ${APP_NAME:-openshift}
       VAULT_UNSEAL_KEY: ${VAULT_UNSEAL_KEY:-}
     volumes:
       - ./:/app
 
   vault:
     image: hashicorp/vault:1.18
-    container_name: skeleton-mcp-vault
+    container_name: openshift-mcp-vault
     restart: unless-stopped
     depends_on:
       vault-unseal-key-init:

@@ -27,6 +27,9 @@ function setEnv(updates) {
 
 function createServiceClientMock() {
   const calls = {
+    discoverApiGroups: 0,
+    discoverApiResources: 0,
+    resourceRequest: 0,
     listProjects: 0,
     request: 0
   };
@@ -43,6 +46,21 @@ function createServiceClientMock() {
     },
     async healthCheck() {
       return { status: 200, data: { ok: true } };
+    },
+    async discoverApiGroups() {
+      calls.discoverApiGroups += 1;
+      return { core: { data: { versions: ["v1"] } }, groups: { data: { groups: [] } } };
+    },
+    async discoverApiResources(apiVersion) {
+      calls.discoverApiResources += 1;
+      return { status: 200, data: { groupVersion: apiVersion, resources: [] } };
+    },
+    async discoverOpenApi() {
+      return { status: 200, data: { paths: {} } };
+    },
+    async resourceRequest(payload) {
+      calls.resourceRequest += 1;
+      return { status: 200, ...payload };
     },
     async listProjects() {
       calls.listProjects += 1;
@@ -198,6 +216,58 @@ test("mutating openshift tools require authorizationKey when admin key is config
     });
     assert.equal(genericAuthorized.payload.ok, true);
     assert.equal(calls.request, 1);
+
+    const resourceUnauthorized = await invokeTool(server, "openshift_resource_request", {
+      apiVersion: "apps/v1",
+      resource: "deployments",
+      namespace: "team-a",
+      name: "api",
+      method: "PATCH",
+      body: { spec: { replicas: 2 } }
+    });
+    assert.equal(resourceUnauthorized.result.isError, true);
+    assert.equal(resourceUnauthorized.payload.status, 401);
+
+    const resourceAuthorized = await invokeTool(server, "openshift_resource_request", {
+      apiVersion: "apps/v1",
+      resource: "deployments",
+      namespace: "team-a",
+      name: "api",
+      method: "PATCH",
+      body: { spec: { replicas: 2 } },
+      authorizationKey: "super-secret"
+    });
+    assert.equal(resourceAuthorized.payload.ok, true);
+    assert.equal(calls.resourceRequest, 1);
+  } finally {
+    restoreEnv();
+  }
+});
+
+test("discovery tools expose installed API groups and resources", async () => {
+  const restoreEnv = setEnv({ MCP_ADMIN_AUTH_KEY: "" });
+
+  try {
+    const { client, calls } = createServiceClientMock();
+    const server = createMcpServer({
+      name: "openshift-mcp",
+      version: "0.1.0",
+      appName: "openshift",
+      serviceClient: client,
+      configStore: createConfigStoreMock(),
+      vaultService: createVaultServiceMock()
+    });
+
+    const groups = await invokeTool(server, "openshift_discover_api_groups");
+    assert.equal(groups.payload.ok, true);
+    assert.deepEqual(groups.payload.data.core.data.versions, ["v1"]);
+
+    const resources = await invokeTool(server, "openshift_discover_api_resources", {
+      apiVersion: "operators.coreos.com/v1alpha1"
+    });
+    assert.equal(resources.payload.data.data.groupVersion, "operators.coreos.com/v1alpha1");
+    assert.equal(calls.discoverApiGroups, 1);
+    assert.equal(calls.discoverApiResources, 1);
   } finally {
     restoreEnv();
   }

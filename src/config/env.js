@@ -105,7 +105,6 @@ export const env = {
     apiBaseUrl: required("OPENSHIFT_API_BASE_URL", "https://api.example.openshift.local:6443"),
     timeoutMs: positiveNumber("OPENSHIFT_TIMEOUT_MS", "15000"),
     authMode: targetAuthMode,
-    defaultBearerToken: optionalString("OPENSHIFT_BEARER_TOKEN", ""),
     tokenSecretPathPrefix: optionalString("OPENSHIFT_USER_TOKEN_SECRET_PATH_PREFIX", "openshift/tokens/users"),
     tokenIndexPath: optionalString("OPENSHIFT_TOKEN_INDEX_PATH", "openshift/token-index"),
     tokenMetadataConfigKeyPrefix: optionalString(

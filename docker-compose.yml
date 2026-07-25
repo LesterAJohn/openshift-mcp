@@ -1,22 +1,22 @@
 services:
   vault-unseal-key-init:
     image: node:20
-    container_name: skeleton-mcp-vault-unseal-key-init
+    container_name: openshift-mcp-vault-unseal-key-init
     restart: "no"
     working_dir: /app
     command: sh -c "npm run vault:unseal-key -- --json"
     environment:
-      APP_NAME: ${APP_NAME:-skeleton}
+      APP_NAME: ${APP_NAME:-openshift}
       VAULT_UNSEAL_KEY: ${VAULT_UNSEAL_KEY:-}
     volumes:
       - ./:/app
 
   postgres:
     image: postgres:16
-    container_name: skeleton-mcp-postgres
+    container_name: openshift-mcp-postgres
     restart: unless-stopped
     environment:
-      APP_NAME: ${APP_NAME:-skeleton}
+      APP_NAME: ${APP_NAME:-openshift}
       POSTGRES_DB: mcp_config
       POSTGRES_USER: mcp_user
       POSTGRES_PASSWORD: mcp_password
@@ -28,7 +28,7 @@ services:
 
   vault:
     image: hashicorp/vault:1.18
-    container_name: skeleton-mcp-vault
+    container_name: openshift-mcp-vault
     restart: unless-stopped
     depends_on:
       vault-unseal-key-init:
@@ -39,7 +39,7 @@ services:
     ports:
       - "8200:8200"
     environment:
-      APP_NAME: ${APP_NAME:-skeleton}
+      APP_NAME: ${APP_NAME:-openshift}
       VAULT_UNSEAL_KEY: ${VAULT_UNSEAL_KEY:-}
     cap_add:
       - IPC_LOCK
@@ -47,7 +47,7 @@ services:
 
   mcp-http:
     image: node:20
-    container_name: skeleton-mcp-http
+    container_name: openshift-mcp-http
     restart: unless-stopped
     working_dir: /app
     depends_on:
@@ -59,7 +59,11 @@ services:
       POSTGRES_DB: mcp_config
       POSTGRES_USER: mcp_user
       POSTGRES_PASSWORD: mcp_password
-      APP_NAME: ${APP_NAME:-skeleton}
+      APP_NAME: ${APP_NAME:-openshift}
+      OPENSHIFT_API_BASE_URL: ${OPENSHIFT_API_BASE_URL:?set OPENSHIFT_API_BASE_URL}
+      OPENSHIFT_AUTH_MODE: bearer
+      OPENSHIFT_USER_TOKEN_SECRET_PATH_PREFIX: openshift/tokens/users
+      OPENSHIFT_TOKEN_INDEX_PATH: openshift/token-index
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: root
       VAULT_AGENT_ENABLED: "true"
@@ -68,7 +72,7 @@ services:
       VAULT_AGENT_LISTENER_ENABLED: "true"
       VAULT_AGENT_LISTENER_ADDR: http://127.0.0.1:8100
       VAULT_KV_MOUNT: secret
-      MCP_SERVER_NAME: skeleton-mcp
+      MCP_SERVER_NAME: openshift-mcp
       MCP_SERVER_VERSION: 0.1.0
       MCP_ALLOW_SENSITIVE_OUTPUT: "false"
       MCP_CONFIG_DEFAULT_USER_ID: default
