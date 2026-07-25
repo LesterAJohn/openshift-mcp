@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added MCP admin authorization status, verification, and rotation tools.
+- Added automatic SHA-256 bootstrap verifier migration from `MCP_ADMIN_AUTH_KEY` to Vault.
+- Changed all mutating tool guards to use fail-closed, Vault-backed authorization with immediate key rotation.
 - Added 18 dedicated OpenShift tools for workloads, logs, events, networking, cluster health, RBAC, Operators, CRDs, and metrics.
 - Added guarded deployment scaling and rollout restart operations.
 - Added canonical API path and MCP authorization tests for the dedicated tools.

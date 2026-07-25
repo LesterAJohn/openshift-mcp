@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 
 import {
@@ -48,8 +49,17 @@ export function createMcpServer({
     version
   });
 
-  const adminAuthKey = process.env.MCP_ADMIN_AUTH_KEY;
   const normalizedAppName = normalizeAppName(appName ?? process.env.APP_NAME ?? "openshift");
+  const adminAuthSecretPath = `${normalizedAppName}/admin/auth`;
+  const envAdminAuthKey = String(process.env.MCP_ADMIN_AUTH_KEY ?? "").trim();
+  const envAdminAuthKeyHash = envAdminAuthKey ? sha256Hex(envAdminAuthKey) : "";
+  let adminAuthState = {
+    loaded: false,
+    configured: Boolean(envAdminAuthKeyHash),
+    keyHash: envAdminAuthKeyHash,
+    source: envAdminAuthKeyHash ? "env" : "none",
+    rotatedAt: null
+  };
   const resolvedDefaultUserId = String(defaultUserId ?? "default").trim() || "default";
   const normalizedTokenPathPrefix = normalizeTokenPathPrefix(tokenSecretPathPrefix);
   const resolvedTokenIndexPath = String(tokenIndexPath ?? getVaultTokenIndexPath(normalizedAppName)).trim();
@@ -90,12 +100,72 @@ export function createMcpServer({
     };
   }
 
-  function assertAuthorized(authorizationKey) {
-    if (!adminAuthKey) {
+  function hashesMatch(left, right) {
+    if (!left || !right || left.length !== right.length) {
+      return false;
+    }
+    return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+  }
+
+  async function loadAdminAuthState({ force = false } = {}) {
+    if (adminAuthState.loaded && !force) {
+      return adminAuthState;
+    }
+
+    let payload;
+    try {
+      payload = await vaultService.getSecret(adminAuthSecretPath);
+    } catch (error) {
+      error.status = Number(error?.status ?? 503);
+      throw error;
+    }
+
+    const keyHash = String(payload?.keyHash ?? "").trim();
+    if (keyHash) {
+      adminAuthState = {
+        loaded: true,
+        configured: true,
+        keyHash,
+        source: "vault",
+        rotatedAt: payload?.rotatedAt ?? payload?.migratedAt ?? null
+      };
+      return adminAuthState;
+    }
+
+    if (envAdminAuthKeyHash) {
+      const migratedAt = new Date().toISOString();
+      await vaultService.setSecret(adminAuthSecretPath, {
+        keyHash: envAdminAuthKeyHash,
+        migratedAt
+      });
+      adminAuthState = {
+        loaded: true,
+        configured: true,
+        keyHash: envAdminAuthKeyHash,
+        source: "vault",
+        rotatedAt: migratedAt
+      };
+      return adminAuthState;
+    }
+
+    adminAuthState = {
+      loaded: true,
+      configured: false,
+      keyHash: "",
+      source: "none",
+      rotatedAt: null
+    };
+    return adminAuthState;
+  }
+
+  async function assertAuthorized(authorizationKey) {
+    const state = await loadAdminAuthState();
+    if (!state.configured) {
       return;
     }
 
-    if (!authorizationKey || authorizationKey !== adminAuthKey) {
+    const candidateHash = authorizationKey ? sha256Hex(authorizationKey) : "";
+    if (!hashesMatch(candidateHash, state.keyHash)) {
       const unauthorized = new Error("Unauthorized: invalid authorizationKey for mutating operation");
       unauthorized.status = 401;
       throw unauthorized;
@@ -171,7 +241,7 @@ export function createMcpServer({
       description,
       { ...schema, authorizationKey: z.string().min(1).optional() },
       withErrorHandling(async (args) => {
-        assertAuthorized(args.authorizationKey);
+        await assertAuthorized(args.authorizationKey);
         const tokenPayload = await readUserTokenPayload(args.userId);
         const bearerToken = String(tokenPayload.token ?? "").trim();
         return {
@@ -200,7 +270,7 @@ export function createMcpServer({
           server: {
             name,
             version,
-            adminAuthConfigured: Boolean(adminAuthKey),
+            adminAuthConfigured: (await loadAdminAuthState()).configured,
             allowSensitiveOutput,
             scopeModel: scope
           },
@@ -209,6 +279,81 @@ export function createMcpServer({
             postgres: postgresHealth,
             vault: vaultHealth
           }
+        }
+      };
+    })
+  );
+
+  server.tool(
+    "mcp_admin_auth_status",
+    "Return MCP admin authorization status without exposing key material.",
+    {},
+    withErrorHandling(async () => {
+      const state = await loadAdminAuthState();
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          configured: state.configured,
+          source: state.source,
+          vaultPath: adminAuthSecretPath,
+          rotatedAt: state.rotatedAt
+        }
+      };
+    })
+  );
+
+  server.tool(
+    "mcp_admin_auth_verify",
+    "Verify an MCP_ADMIN_AUTH_KEY-compatible authorization key.",
+    {
+      authorizationKey: z.string().min(1)
+    },
+    withErrorHandling(async ({ authorizationKey }) => {
+      await assertAuthorized(authorizationKey);
+      return {
+        ok: true,
+        status: 200,
+        data: { authorized: true }
+      };
+    })
+  );
+
+  server.tool(
+    "mcp_admin_auth_rotate",
+    "Rotate MCP admin authorization into Vault. The current key is required and the new key is never returned.",
+    {
+      authorizationKey: z.string().min(1),
+      newAuthorizationKey: z.string().min(16)
+    },
+    withErrorHandling(async ({ authorizationKey, newAuthorizationKey }) => {
+      const currentState = await loadAdminAuthState();
+      if (!currentState.configured) {
+        const error = new Error("Admin authorization is not configured; bootstrap MCP_ADMIN_AUTH_KEY before rotation");
+        error.status = 409;
+        throw error;
+      }
+
+      await assertAuthorized(authorizationKey);
+      const rotatedAt = new Date().toISOString();
+      const keyHash = sha256Hex(newAuthorizationKey);
+      await vaultService.setSecret(adminAuthSecretPath, { keyHash, rotatedAt });
+      adminAuthState = {
+        loaded: true,
+        configured: true,
+        keyHash,
+        source: "vault",
+        rotatedAt
+      };
+
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          configured: true,
+          source: "vault",
+          vaultPath: adminAuthSecretPath,
+          rotatedAt
         }
       };
     })
@@ -329,7 +474,7 @@ export function createMcpServer({
     }) => {
       const normalizedMethod = normalizeMethod(method);
       if (MUTATING_METHODS.has(normalizedMethod)) {
-        assertAuthorized(authorizationKey);
+        await assertAuthorized(authorizationKey);
       }
 
       const tokenPayload = await readUserTokenPayload(userId);
@@ -651,7 +796,7 @@ export function createMcpServer({
       const normalizedMethod = normalizeMethod(method);
       const normalizedPath = normalizePath(path);
       if (MUTATING_METHODS.has(normalizedMethod)) {
-        assertAuthorized(authorizationKey);
+        await assertAuthorized(authorizationKey);
       }
 
       const tokenPayload = await readUserTokenPayload(userId);
@@ -685,7 +830,7 @@ export function createMcpServer({
       authorizationKey: z.string().min(1).optional()
     },
     withErrorHandling(async ({ userId, token, tokenId, expiresAt, scopes, audience, authorizationKey }) => {
-      assertAuthorized(authorizationKey);
+      await assertAuthorized(authorizationKey);
       const resolvedUserId = resolveUserId(userId);
 
       const { tokenHash, entry } = createVaultTokenEntry({
@@ -783,7 +928,7 @@ export function createMcpServer({
       authorizationKey: z.string().min(1).optional()
     },
     withErrorHandling(async ({ userId, authorizationKey }) => {
-      assertAuthorized(authorizationKey);
+      await assertAuthorized(authorizationKey);
       const resolvedUserId = resolveUserId(userId);
       const tokenPayload = await readUserTokenPayload(resolvedUserId);
       const tokenHash = String(tokenPayload.tokenHash ?? "").trim() || sha256Hex(String(tokenPayload.token ?? ""));
@@ -864,7 +1009,7 @@ export function createMcpServer({
       authorizationKey: z.string().min(1).optional()
     },
     withErrorHandling(async ({ key, value, userId, authorizationKey }) => {
-      assertAuthorized(authorizationKey);
+      await assertAuthorized(authorizationKey);
       const resolvedUserId = resolveUserId(userId);
       const record = await configStore.setConfig(key, value, resolvedUserId);
       return {

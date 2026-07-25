@@ -21,7 +21,7 @@ Runtime flow:
 
 ## OpenShift MCP Tools
 
-The server exposes 32 OpenShift-specific tools plus 2 Postgres configuration tools (34 total).
+The server exposes 32 OpenShift-specific tools, 3 MCP admin-auth tools, and 2 Postgres configuration tools (37 total).
 
 Read tools:
 - `openshift_connection_info`
@@ -62,6 +62,13 @@ Mutating tools:
 - `config_set`
 
 If `MCP_ADMIN_AUTH_KEY` is set, all mutating tools require `authorizationKey`.
+
+Admin authorization tools:
+- `mcp_admin_auth_status` reports whether admin authorization is configured, its source, and rotation time without exposing key material.
+- `mcp_admin_auth_verify` verifies an `authorizationKey` against the active admin key hash.
+- `mcp_admin_auth_rotate` requires the current key, persists the replacement hash in Vault, and invalidates the old key immediately.
+
+`MCP_ADMIN_AUTH_KEY` is a bootstrap value. On first authorization or status operation, the server hashes it with SHA-256 and persists the verifier at `${APP_NAME}/admin/auth` in Vault. Vault takes precedence on subsequent process starts. The plaintext bootstrap or replacement key is never stored or returned by the server. Use a minimum of 16 characters when rotating.
 
 Dedicated tools cover routine operations with validated inputs:
 - Workloads and diagnostics: pods, logs, events, deployments, scaling, and rollout restart
@@ -164,6 +171,16 @@ HTTP transport:
 - `MCP_HTTP_RATE_LIMIT_MAX_REQUESTS`
 
 Use `.env.example` as the baseline.
+
+### Admin Key Bootstrap And Rotation
+
+1. Set `MCP_ADMIN_AUTH_KEY` for the initial deployment.
+2. Call `mcp_admin_auth_status`; this imports the hashed bootstrap verifier into Vault.
+3. Call `mcp_admin_auth_verify` with `authorizationKey` to confirm access.
+4. Call `mcp_admin_auth_rotate` with the current `authorizationKey` and `newAuthorizationKey`.
+5. Update the calling client's key. The previous key no longer authorizes mutations.
+
+If Vault cannot be read, admin verification fails closed rather than falling back to process-only authorization.
 
 ## Local Development
 

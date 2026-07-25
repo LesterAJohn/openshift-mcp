@@ -321,3 +321,70 @@ test("dedicated tools delegate reads and authorize mutations", async () => {
     restoreEnv();
   }
 });
+
+test("MCP admin auth tools migrate, verify, and rotate the key in Vault", async () => {
+  const restoreEnv = setEnv({ MCP_ADMIN_AUTH_KEY: "bootstrap-admin-key" });
+
+  try {
+    const vaultService = createVaultServiceMock();
+    const createServer = () => {
+      const { client } = createServiceClientMock();
+      return createMcpServer({
+        name: "openshift-mcp",
+        version: "0.1.0",
+        appName: "openshift",
+        serviceClient: client,
+        configStore: createConfigStoreMock(),
+        vaultService
+      });
+    };
+
+    const server = createServer();
+    const initialStatus = await invokeTool(server, "mcp_admin_auth_status");
+    assert.equal(initialStatus.payload.data.configured, true);
+    assert.equal(initialStatus.payload.data.source, "vault");
+    assert.equal(initialStatus.payload.data.vaultPath, "openshift/admin/auth");
+
+    const migrated = await vaultService.getSecret("openshift/admin/auth");
+    assert.equal(typeof migrated.keyHash, "string");
+    assert.equal(migrated.keyHash.length, 64);
+    assert.equal("authorizationKey" in migrated, false);
+
+    const invalid = await invokeTool(server, "mcp_admin_auth_verify", {
+      authorizationKey: "incorrect-key"
+    });
+    assert.equal(invalid.result.isError, true);
+    assert.equal(invalid.payload.status, 401);
+
+    const valid = await invokeTool(server, "mcp_admin_auth_verify", {
+      authorizationKey: "bootstrap-admin-key"
+    });
+    assert.equal(valid.payload.data.authorized, true);
+
+    const rotated = await invokeTool(server, "mcp_admin_auth_rotate", {
+      authorizationKey: "bootstrap-admin-key",
+      newAuthorizationKey: "replacement-admin-key"
+    });
+    assert.equal(rotated.payload.ok, true);
+    assert.equal(rotated.payload.data.source, "vault");
+
+    const oldKey = await invokeTool(server, "mcp_admin_auth_verify", {
+      authorizationKey: "bootstrap-admin-key"
+    });
+    assert.equal(oldKey.result.isError, true);
+    assert.equal(oldKey.payload.status, 401);
+
+    const newKey = await invokeTool(server, "mcp_admin_auth_verify", {
+      authorizationKey: "replacement-admin-key"
+    });
+    assert.equal(newKey.payload.data.authorized, true);
+
+    const restartedServer = createServer();
+    const persisted = await invokeTool(restartedServer, "mcp_admin_auth_verify", {
+      authorizationKey: "replacement-admin-key"
+    });
+    assert.equal(persisted.payload.data.authorized, true);
+  } finally {
+    restoreEnv();
+  }
+});
