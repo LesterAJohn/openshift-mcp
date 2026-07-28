@@ -296,6 +296,47 @@ test("discovery tools expose installed API groups and resources", async () => {
   }
 });
 
+test("query suggestion schema discovery returns tool catalog and intent-based recommendations", async () => {
+  const restoreEnv = setEnv({ MCP_ADMIN_AUTH_KEY: "" });
+
+  try {
+    const { client } = createServiceClientMock();
+    const redshiftService = {
+      async healthCheck() {
+        return { ok: true };
+      },
+      async query() {
+        return { rows: [], rowCount: 0 };
+      }
+    };
+    const server = createMcpServer({
+      name: "openshift-mcp",
+      version: "0.1.0",
+      appName: "openshift",
+      serviceClient: client,
+      redshiftService,
+      configStore: createConfigStoreMock(),
+      vaultService: createVaultServiceMock()
+    });
+
+    const discovered = await invokeTool(server, "mcp_query_suggestion_schema_discovery", {
+      intent: "redshift sql query",
+      maxRecommendations: 5
+    });
+
+    assert.equal(discovered.payload.ok, true);
+    assert.equal(discovered.payload.status, 200);
+    assert.ok(discovered.payload.data.totalDiscoveredTools >= 40);
+    assert.ok(Array.isArray(discovered.payload.data.schemaDiscovery));
+    assert.ok(discovered.payload.data.schemaDiscovery.some((tool) => tool.name === "openshift_health_check"));
+    assert.ok(discovered.payload.data.schemaDiscovery.some((tool) => tool.name === "redshift_query"));
+    assert.equal(discovered.payload.data.schemaDiscovery.some((tool) => tool.name === "mcp_query_suggestion_schema_discovery"), false);
+    assert.equal(discovered.payload.data.recommendations[0].name, "redshift_query");
+  } finally {
+    restoreEnv();
+  }
+});
+
 test("dedicated tools delegate reads and authorize mutations", async () => {
   const restoreEnv = setEnv({ MCP_ADMIN_AUTH_KEY: "super-secret" });
 

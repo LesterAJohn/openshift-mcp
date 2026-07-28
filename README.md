@@ -22,7 +22,7 @@ Runtime flow:
 
 ## OpenShift MCP Tools
 
-The server exposes 32 OpenShift-specific tools, 6 Redshift tools, 3 MCP admin-auth tools, and 2 Postgres configuration tools (43 total).
+The server exposes 32 OpenShift-specific tools, 6 Redshift tools, 3 MCP admin-auth tools, 2 Postgres configuration tools, and 1 MCP meta discovery tool (44 total).
 
 ### Shared Invocation Contract
 
@@ -62,6 +62,12 @@ Notes:
 - `Risk` values are `read-only`, `mutating`, or `high-risk`.
 - `Flow` recommends prerequisite and follow-up tools.
 - `Example` snippets are valid request argument payloads.
+
+#### MCP Meta Discovery Tool
+
+| Tool | Use / Avoid | Risk | Permissions and prerequisites | Parameters and constraints | Scope selection | Expected `data` shape | Common failures | Flow | Example |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `mcp_query_suggestion_schema_discovery` | Use to discover every registered MCP tool schema and get intent-based recommendations. Avoid using it as an authorization substitute for guarded tools. | read-only | Requires MCP server startup; no cluster mutation rights required. | `intent?`, `includeSchemas? (default true)`, `includeExamples? (default true)`, `includeHighRisk? (default true)`, `maxRecommendations? (1-25 default 12)` | Server-global tool catalog scope. | recommendation list, optional complete schema catalog, preflight and safety guidance | 500 internal errors only | Run first for operator guidance, then invoke recommended tools in order. | `{ "intent": "redshift sql query", "maxRecommendations": 5 }` |
 
 #### OpenShift Read-Only Tools
 

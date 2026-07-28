@@ -31,6 +31,235 @@ function normalizeTokenPathPrefix(value) {
   return String(value ?? "openshift/tokens/users").trim().replace(/^\/+|\/+$/g, "") || "openshift/tokens/users";
 }
 
+const HIGH_RISK_TOOLS = new Set([
+  "openshift_resource_request",
+  "openshift_api_request",
+  "openshift_set_user_token",
+  "openshift_deactivate_user_token",
+  "mcp_admin_auth_rotate",
+  "redshift_set_cluster",
+  "redshift_remove_cluster",
+  "redshift_query"
+]);
+
+const MUTATING_TOOLS = new Set([
+  "openshift_scale_deployment",
+  "openshift_rollout_restart",
+  "config_set"
+]);
+
+function inferToolRisk(toolName) {
+  if (HIGH_RISK_TOOLS.has(toolName)) {
+    return "high-risk";
+  }
+  if (MUTATING_TOOLS.has(toolName)) {
+    return "mutating";
+  }
+  return "read-only";
+}
+
+function inferToolCategory(toolName) {
+  if (toolName.startsWith("openshift_")) {
+    return "openshift";
+  }
+  if (toolName.startsWith("redshift_")) {
+    return "redshift";
+  }
+  if (toolName.startsWith("mcp_admin_auth_")) {
+    return "admin-auth";
+  }
+  if (toolName.startsWith("config_")) {
+    return "config";
+  }
+  if (toolName.startsWith("mcp_")) {
+    return "meta";
+  }
+  return "other";
+}
+
+function splitWords(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter(Boolean);
+}
+
+function getZodShape(schema) {
+  const shapeSource = schema?._def?.shape;
+  if (!shapeSource) {
+    return {};
+  }
+  return typeof shapeSource === "function" ? shapeSource() : shapeSource;
+}
+
+function unwrapZodType(schema) {
+  let current = schema;
+  let required = true;
+  let hasDefault = false;
+  let nullable = false;
+
+  while (current?._def?.typeName) {
+    const typeName = current._def.typeName;
+    if (typeName === "ZodOptional") {
+      required = false;
+      current = current._def.innerType;
+      continue;
+    }
+    if (typeName === "ZodDefault") {
+      required = false;
+      hasDefault = true;
+      current = current._def.innerType;
+      continue;
+    }
+    if (typeName === "ZodNullable") {
+      nullable = true;
+      current = current._def.innerType;
+      continue;
+    }
+    break;
+  }
+
+  return {
+    baseSchema: current,
+    required,
+    hasDefault,
+    nullable
+  };
+}
+
+function describeZodType(schema) {
+  const typeName = schema?._def?.typeName;
+  switch (typeName) {
+    case "ZodString":
+      return "string";
+    case "ZodNumber":
+      return "number";
+    case "ZodBoolean":
+      return "boolean";
+    case "ZodArray":
+      return `array<${describeZodType(schema._def.type)}>`;
+    case "ZodEnum": {
+      const values = Array.isArray(schema?._def?.values) ? schema._def.values : [];
+      return values.length ? `enum(${values.join("|")})` : "enum";
+    }
+    case "ZodObject":
+      return "object";
+    case "ZodRecord":
+      return "record";
+    case "ZodUnknown":
+      return "unknown";
+    case "ZodAny":
+      return "any";
+    default:
+      return "value";
+  }
+}
+
+function getParameterExample(name, schema) {
+  const { baseSchema } = unwrapZodType(schema);
+  const typeName = baseSchema?._def?.typeName;
+  const key = String(name ?? "");
+
+  if (key === "userId") return "default";
+  if (key === "authorizationKey") return "<admin-authorization-key>";
+  if (key === "namespace") return "default";
+  if (key === "projectName") return "my-project";
+  if (key === "clusterId") return "analytics";
+  if (key === "sql") return "select 1";
+  if (key === "apiVersion") return "v1";
+  if (key === "resource") return "pods";
+  if (key === "path") return "/api/v1/nodes";
+  if (key === "method") return "GET";
+  if (key === "token") return "<openshift-bearer-token>";
+  if (key === "key") return "feature.flag.example";
+
+  switch (typeName) {
+    case "ZodString":
+      return `<${key || "value"}>`;
+    case "ZodNumber":
+      return 1;
+    case "ZodBoolean":
+      return true;
+    case "ZodEnum": {
+      const values = Array.isArray(baseSchema?._def?.values) ? baseSchema._def.values : [];
+      return values[0] ?? null;
+    }
+    case "ZodArray":
+      return [];
+    case "ZodObject":
+    case "ZodRecord":
+      return {};
+    default:
+      return null;
+  }
+}
+
+function summarizeToolSchema(schema) {
+  const shape = getZodShape(schema);
+  return Object.entries(shape).map(([name, value]) => {
+    const unwrapped = unwrapZodType(value);
+    return {
+      name,
+      type: describeZodType(unwrapped.baseSchema),
+      required: unwrapped.required,
+      hasDefault: unwrapped.hasDefault,
+      nullable: unwrapped.nullable
+    };
+  });
+}
+
+function buildExampleArgs(schema) {
+  const shape = getZodShape(schema);
+  const requiredArgs = {};
+  for (const [name, value] of Object.entries(shape)) {
+    const unwrapped = unwrapZodType(value);
+    if (!unwrapped.required) {
+      continue;
+    }
+    const example = getParameterExample(name, value);
+    if (example !== null) {
+      requiredArgs[name] = example;
+    }
+  }
+  return requiredArgs;
+}
+
+function scoreToolForIntent(toolName, description, intentWords) {
+  if (!intentWords.length) {
+    return 0;
+  }
+
+  const haystack = new Set([...splitWords(toolName), ...splitWords(description)]);
+  let score = 0;
+  for (const word of intentWords) {
+    if (haystack.has(word)) {
+      score += 3;
+    }
+    if (toolName.includes(word)) {
+      score += 2;
+    }
+  }
+
+  const intentText = intentWords.join(" ");
+  if (intentText.includes("discover") || intentText.includes("schema")) {
+    if (toolName.includes("discover") || toolName.includes("resource_request")) {
+      score += 2;
+    }
+  }
+  if (intentText.includes("redshift") || intentText.includes("sql") || intentText.includes("query")) {
+    if (toolName.startsWith("redshift_")) {
+      score += 3;
+    }
+  }
+  if (intentText.includes("auth") || intentText.includes("token")) {
+    if (toolName.startsWith("mcp_admin_auth_") || toolName.includes("token")) {
+      score += 3;
+    }
+  }
+
+  return score;
+}
+
 export function createMcpServer({
   name,
   version,
@@ -1198,6 +1427,83 @@ export function createMcpServer({
       })
     );
   }
+
+  server.tool(
+    "mcp_query_suggestion_schema_discovery",
+    "Discover MCP tool schemas and get intent-based recommendations for which tool to use next.",
+    {
+      intent: z.string().min(1).optional(),
+      includeSchemas: z.boolean().default(true),
+      includeExamples: z.boolean().default(true),
+      includeHighRisk: z.boolean().default(true),
+      maxRecommendations: z.number().int().min(1).max(25).default(12)
+    },
+    withErrorHandling(async ({ intent, includeSchemas, includeExamples, includeHighRisk, maxRecommendations }) => {
+      const resolvedIncludeSchemas = includeSchemas ?? true;
+      const resolvedIncludeExamples = includeExamples ?? true;
+      const resolvedIncludeHighRisk = includeHighRisk ?? true;
+      const resolvedMaxRecommendations = Number.isFinite(maxRecommendations) ? maxRecommendations : 12;
+      const registeredTools = server._registeredTools && typeof server._registeredTools === "object" ? server._registeredTools : {};
+      const catalog = Object.entries(registeredTools)
+        .filter(([toolName]) => toolName !== "mcp_query_suggestion_schema_discovery")
+        .map(([toolName, definition]) => {
+          const schema = definition?.inputSchema;
+          const parameters = summarizeToolSchema(schema);
+          return {
+            name: toolName,
+            category: inferToolCategory(toolName),
+            risk: inferToolRisk(toolName),
+            description: String(definition?.description ?? ""),
+            parameters,
+            exampleArgs: resolvedIncludeExamples ? buildExampleArgs(schema) : undefined
+          };
+        })
+        .sort((left, right) => left.name.localeCompare(right.name));
+
+      const intentWords = splitWords(intent);
+      const recommendationPool = catalog.filter((tool) => resolvedIncludeHighRisk || tool.risk !== "high-risk");
+      const recommendations = recommendationPool
+        .map((tool) => {
+          const score = scoreToolForIntent(tool.name, tool.description, intentWords);
+          return {
+            ...tool,
+            score,
+            reason:
+              score > 0
+                ? `Matched requested intent terms in tool name/description (score ${score}).`
+                : "Found as part of the complete MCP capability catalog."
+          };
+        })
+        .sort((left, right) => {
+          if (right.score !== left.score) {
+            return right.score - left.score;
+          }
+          return left.name.localeCompare(right.name);
+        })
+        .slice(0, resolvedMaxRecommendations);
+
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          intent: intent ?? null,
+          totalDiscoveredTools: catalog.length,
+          recommendationCount: recommendations.length,
+          recommendations,
+          schemaDiscovery: resolvedIncludeSchemas ? catalog : undefined,
+          safety:
+            "Mutating and high-risk tools may require authorizationKey and can alter cluster, credential, or data state. Use mcp_admin_auth_status and mcp_admin_auth_verify before guarded operations.",
+          preflightSequence: [
+            "mcp_admin_auth_status",
+            "mcp_admin_auth_verify",
+            "openshift_connection_info",
+            "target tool",
+            "matching read-only verification tool"
+          ]
+        }
+      };
+    })
+  );
 
   return server;
 }

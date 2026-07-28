@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added `mcp_query_suggestion_schema_discovery` to recommend tool usage and expose schema discovery for all registered MCP tools.
 - Added user-scoped multi-cluster Redshift registration with Postgres metadata and Vault-backed credentials.
 - Added Redshift cluster listing, lookup, removal, health check, and parameterized query tools selected by `clusterId`.
 - Added MCP admin authorization status, verification, and rotation tools.
